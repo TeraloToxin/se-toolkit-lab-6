@@ -276,7 +276,6 @@ TOOLS = [
                     "skip_auth": {
                         "type": "boolean",
                         "description": "If true, omit the Authorization header (useful for testing auth behavior)",
-                        "default": false,
                     },
                 },
                 "required": ["method", "path"],
