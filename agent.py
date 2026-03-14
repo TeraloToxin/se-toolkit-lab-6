@@ -155,7 +155,7 @@ def list_files(path: str) -> str:
         return f"Error listing directory: {str(e)}"
 
 
-def query_api(method: str, path: str, body: str = "", config: dict[str, str] | None = None) -> str:
+def query_api(method: str, path: str, body: str = "", skip_auth: bool = False, config: dict[str, str] | None = None) -> str:
     """
     Query the deployed backend API.
 
@@ -163,6 +163,7 @@ def query_api(method: str, path: str, body: str = "", config: dict[str, str] | N
         method: HTTP method (GET, POST, etc.)
         path: API endpoint path (e.g., '/items/')
         body: Optional JSON request body for POST/PUT
+        skip_auth: If true, omit Authorization header
         config: Configuration dict with lms_api_key and agent_api_base_url
 
     Returns:
@@ -180,8 +181,8 @@ def query_api(method: str, path: str, body: str = "", config: dict[str, str] | N
 
     base_url = config.get("agent_api_base_url", "http://localhost:42002")
     url = f"{base_url}{path}"
-    
-    lms_api_key = config.get("lms_api_key", "")
+
+    lms_api_key = config.get("lms_api_key", "") if not skip_auth else ""
 
     headers: dict[str, str] = {}
     if lms_api_key:
@@ -272,6 +273,11 @@ TOOLS = [
                         "type": "string",
                         "description": "Optional JSON request body for POST/PUT requests",
                     },
+                    "skip_auth": {
+                        "type": "boolean",
+                        "description": "If true, omit the Authorization header (useful for testing auth behavior)",
+                        "default": false,
+                    },
                 },
                 "required": ["method", "path"],
             },
@@ -293,8 +299,9 @@ When answering questions:
 2. For source code questions → use read_file on backend/ or other source files
 3. For live data questions (counts, status codes, analytics) → use query_api
 4. For bug diagnosis → use query_api to see the error, then read_file to find the bug in source code
-5. Include a source reference when applicable (file path with section anchor)
-6. Format source as: "wiki/filename.md#section-anchor" or "backend/path/file.py"
+5. To check authentication behavior (e.g., "what status code without auth?") → use query_api with skip_auth=true
+6. Include a source reference when applicable (file path with section anchor)
+7. Format source as: "wiki/filename.md#section-anchor" or "backend/path/file.py"
 
 Always provide accurate answers based on file contents or API responses.
 Maximum 10 tool calls per question.
@@ -323,7 +330,8 @@ def execute_tool(name: str, args: dict[str, Any], config: dict[str, str] | None 
         method = args.get("method", "GET")
         path = args.get("path", "")
         body = args.get("body", "")
-        return query_api(method, path, body, config)
+        skip_auth = args.get("skip_auth", False)
+        return query_api(method, path, body, skip_auth, config)
     else:
         return f"Error: Unknown tool: {name}"
 
