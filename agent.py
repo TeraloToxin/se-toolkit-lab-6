@@ -27,7 +27,12 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 
 
 def load_env() -> dict[str, str]:
-    """Load environment variables from .env.agent.secret."""
+    """
+    Load environment variables from .env.agent.secret and .env.docker.secret.
+    
+    Reads LLM config from .env.agent.secret and backend config from .env.docker.secret.
+    """
+    # Load LLM config from .env.agent.secret
     env_path = Path(__file__).parent / ".env.agent.secret"
     if not env_path.exists():
         print(f"Error: {env_path} not found", file=sys.stderr)
@@ -38,10 +43,17 @@ def load_env() -> dict[str, str]:
         sys.exit(1)
 
     load_dotenv(env_path)
+    
+    # Also load .env.docker.secret for LMS_API_KEY
+    docker_env_path = Path(__file__).parent / ".env.docker.secret"
+    if docker_env_path.exists():
+        load_dotenv(docker_env_path, override=False)
 
     api_key = os.getenv("LLM_API_KEY")
     api_base = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
+    lms_api_key = os.getenv("LMS_API_KEY")
+    agent_api_base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
 
     if not api_key or api_key == "your-llm-api-key-here":
         print("Error: LLM_API_KEY not set in .env.agent.secret", file=sys.stderr)
@@ -57,6 +69,8 @@ def load_env() -> dict[str, str]:
         "api_key": api_key,
         "api_base": api_base.rstrip("/"),
         "model": model,
+        "lms_api_key": lms_api_key or "",
+        "agent_api_base_url": agent_api_base_url.rstrip("/"),
     }
 
 
@@ -116,29 +130,89 @@ def read_file(path: str) -> str:
 def list_files(path: str) -> str:
     """
     List files and directories at a given path.
-    
+
     Args:
         path: Relative directory path from project root
-        
+
     Returns:
         Newline-separated listing, or error message
     """
     try:
         validated_path = validate_path(path)
-        
+
         if not validated_path.exists():
             return f"Error: Path not found: {path}"
-        
+
         if not validated_path.is_dir():
             return f"Error: Not a directory: {path}"
-        
+
         entries = sorted([e.name for e in validated_path.iterdir()])
         return "\n".join(entries)
-        
+
     except ValueError as e:
         return f"Error: {str(e)}"
     except Exception as e:
         return f"Error listing directory: {str(e)}"
+
+
+def query_api(method: str, path: str, body: str = "", config: dict[str, str] | None = None) -> str:
+    """
+    Query the deployed backend API.
+
+    Args:
+        method: HTTP method (GET, POST, etc.)
+        path: API endpoint path (e.g., '/items/')
+        body: Optional JSON request body for POST/PUT
+        config: Configuration dict with lms_api_key and agent_api_base_url
+
+    Returns:
+        JSON string with status_code and body, or error message
+    """
+    if config is None:
+        config = {"lms_api_key": "", "agent_api_base_url": "http://localhost:42002"}
+
+    # Validate path (no traversal)
+    if ".." in path:
+        return "Error: Path traversal (..) not allowed"
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    base_url = config.get("agent_api_base_url", "http://localhost:42002")
+    url = f"{base_url}{path}"
+    
+    lms_api_key = config.get("lms_api_key", "")
+
+    headers: dict[str, str] = {}
+    if lms_api_key:
+        headers["Authorization"] = f"Bearer {lms_api_key}"
+    headers["Content-Type"] = "application/json"
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                response = client.post(url, headers=headers, content=body if body else "{}")
+            elif method.upper() == "PUT":
+                response = client.put(url, headers=headers, content=body if body else "{}")
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return f"Error: Unsupported method: {method}"
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.text,
+            }
+            return json.dumps(result)
+
+    except httpx.TimeoutException:
+        return f"Error: Request timeout (30s) for {url}"
+    except httpx.ConnectError as e:
+        return f"Error: Cannot connect to API at {url}: {str(e)}"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 
 # Tool definitions for LLM function calling
@@ -177,35 +251,65 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Query the deployed backend API to get data or check system status",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        "enum": ["GET", "POST", "PUT", "DELETE"],
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API endpoint path (e.g., '/items/', '/analytics/completion-rate')",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT requests",
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+    },
 ]
 
 # System prompt for the documentation agent
-SYSTEM_PROMPT = """You are a documentation assistant for a software engineering project.
-You have access to the project wiki and source code files.
+SYSTEM_PROMPT = """You are a documentation and system assistant for a software engineering project.
+You have access to the project wiki, source code files, and the live backend API.
 
 Available tools:
 - list_files(path): List files and directories at a given path
 - read_file(path): Read the contents of a file
+- query_api(method, path, body?): Query the live backend API
 
 When answering questions:
-1. First use list_files to discover relevant files in the wiki/ directory
-2. Then use read_file to read specific files and find the answer
-3. Include a source reference in your answer (file path with section anchor if applicable)
-4. Format source as: "wiki/filename.md#section-anchor"
+1. For wiki/documentation questions → use list_files to discover files, then read_file to find the answer
+2. For source code questions → use read_file on backend/ or other source files
+3. For live data questions (counts, status codes, analytics) → use query_api
+4. For bug diagnosis → use query_api to see the error, then read_file to find the bug in source code
+5. Include a source reference when applicable (file path with section anchor)
+6. Format source as: "wiki/filename.md#section-anchor" or "backend/path/file.py"
 
-Always provide accurate answers based on the file contents.
+Always provide accurate answers based on file contents or API responses.
 Maximum 10 tool calls per question.
-If you cannot find the answer in the files, say so honestly."""
+If you cannot find the answer, say so honestly."""
 
 
-def execute_tool(name: str, args: dict[str, Any]) -> str:
+def execute_tool(name: str, args: dict[str, Any], config: dict[str, str] | None = None) -> str:
     """
     Execute a tool and return the result.
-    
+
     Args:
-        name: Tool name (read_file or list_files)
+        name: Tool name (read_file, list_files, or query_api)
         args: Tool arguments
-        
+        config: Configuration dict for query_api
+
     Returns:
         Tool result as string
     """
@@ -215,6 +319,11 @@ def execute_tool(name: str, args: dict[str, Any]) -> str:
     elif name == "list_files":
         path = args.get("path", "")
         return list_files(path)
+    elif name == "query_api":
+        method = args.get("method", "GET")
+        path = args.get("path", "")
+        body = args.get("body", "")
+        return query_api(method, path, body, config)
     else:
         return f"Error: Unknown tool: {name}"
 
@@ -328,9 +437,9 @@ def run_agentic_loop(question: str, config: dict[str, str]) -> dict[str, Any]:
                     args = {"path": tool_call["arguments"]}
                 
                 print(f"  Calling {name}({args})...", file=sys.stderr)
-                
-                result = execute_tool(name, args)
-                
+
+                result = execute_tool(name, args, config)
+
                 tool_calls_log.append({
                     "tool": name,
                     "args": args,
