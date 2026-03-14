@@ -7,6 +7,7 @@
   - [File name](#file-name)
   - [Extension](#extension)
   - [Location](#location)
+  - [File path](#file-path)
 - [Directory](#directory)
   - [Subdirectory](#subdirectory)
 - [Path](#path)
@@ -56,6 +57,10 @@ Example: `README.md` has the extension `.md`.
 The location of a file is its containing [directory](#directory).
 
 Example: for the file `/home/user/project/README.md`, the location is `/home/user/project/`.
+
+### File path
+
+The [path](#path) of a [file](#file).
 
 ## Directory
 
