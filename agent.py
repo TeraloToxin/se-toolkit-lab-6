@@ -428,6 +428,12 @@ def run_agentic_loop(question: str, config: dict[str, str]) -> dict[str, Any]:
         response = call_llm(messages, config)
         
         if response["tool_calls"]:
+            # First, add the assistant message with tool_calls
+            messages.append({
+                "role": "assistant",
+                "tool_calls": response["tool_calls"],
+            })
+            
             # Execute tool calls
             for tool_call in response["tool_calls"]:
                 name = tool_call["name"]
@@ -435,7 +441,7 @@ def run_agentic_loop(question: str, config: dict[str, str]) -> dict[str, Any]:
                     args = json.loads(tool_call["arguments"])
                 except json.JSONDecodeError:
                     args = {"path": tool_call["arguments"]}
-                
+
                 print(f"  Calling {name}({args})...", file=sys.stderr)
 
                 result = execute_tool(name, args, config)
@@ -445,14 +451,14 @@ def run_agentic_loop(question: str, config: dict[str, str]) -> dict[str, Any]:
                     "args": args,
                     "result": result,
                 })
-                
+
                 # Append tool result to messages
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
                     "content": result,
                 })
-            
+
             # Continue loop - LLM will reason about results
             continue
         else:
