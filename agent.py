@@ -428,10 +428,21 @@ def run_agentic_loop(question: str, config: dict[str, str]) -> dict[str, Any]:
         response = call_llm(messages, config)
         
         if response["tool_calls"]:
-            # First, add the assistant message with tool_calls
+            # First, add the assistant message with tool_calls in Qwen format
+            tool_calls_formatted = []
+            for tc in response["tool_calls"]:
+                tool_calls_formatted.append({
+                    "id": tc.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    }
+                })
+            
             messages.append({
                 "role": "assistant",
-                "tool_calls": response["tool_calls"],
+                "tool_calls": tool_calls_formatted,
             })
             
             # Execute tool calls
